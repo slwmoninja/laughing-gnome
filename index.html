@@ -6,6 +6,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#1B4332">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
 <title>Laughing Gnome</title>
 <style>
 :root{
@@ -354,6 +356,30 @@ input{font-family:inherit}
           </div>
         </div>
       </div>
+      <!-- Install & Backup -->
+      <div class="settings-section">
+        <div class="settings-label">INSTALL &amp; BACKUP</div>
+        <div class="settings-card">
+          <div class="settings-row" onclick="handleInstallClick()" style="cursor:pointer" id="settings-install-row">
+            <div class="settings-row-icon">📲</div>
+            <div class="settings-row-content">
+              <div class="settings-row-title">Add to Home Screen</div>
+              <div class="settings-row-value" id="settings-install-val">Not installed — tap to install</div>
+            </div>
+            <span style="color:var(--muted)">›</span>
+          </div>
+          <div class="settings-row" onclick="backupNow()" style="cursor:pointer">
+            <div class="settings-row-icon">💾</div>
+            <div class="settings-row-title">Back Up Now</div>
+          </div>
+          <div class="settings-row" onclick="triggerRestoreBackup()" style="cursor:pointer">
+            <div class="settings-row-icon">📂</div>
+            <div class="settings-row-title">Restore from Backup</div>
+          </div>
+        </div>
+        <div class="settings-note">Installing helps protect your saved scans and region from being silently cleared by the browser. Back up regularly for a copy that survives you clearing your browsing history — nothing can protect against that automatically.</div>
+        <input type="file" id="restore-backup-input" accept=".json,.js,application/json" multiple style="display:none" onchange="handleRestoreInput(this)">
+      </div>
       <!-- About -->
       <div class="settings-section">
         <div class="settings-label">ABOUT</div>
@@ -609,6 +635,7 @@ function updateSettingsDisplay() {
   if(state.region) rv.textContent = state.region.state + ', ' + state.region.country;
   else rv.textContent = 'Not set — tap to configure';
   document.getElementById('settings-scan-count').textContent = state.history.length + ' plants in history';
+  updateInstallDisplay();
 }
 
 function updateRegionBadge() {
@@ -1574,6 +1601,280 @@ function escHtml(s) {
 function escAttr(s) {
   return String(s||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
 }
+
+// ════════════════════════════════════════════════════
+//  PWA — install, update-checking, storage persistence
+// ════════════════════════════════════════════════════
+
+// Registering a service worker (see sw.js) is also what lets Chrome on
+// Android offer a real "Install app" rather than a plain bookmark shortcut —
+// installed apps get the browser's strongest guarantee against silently
+// evicting a site's storage under disk pressure, the most likely cause of
+// saved scans/region disappearing on an ordinary close/reopen (as opposed to
+// the user deliberately clearing history — no web API can opt out of that
+// one, install or not).
+if(navigator.serviceWorker && navigator.serviceWorker.register) navigator.serviceWorker.register('sw.js').catch(function(){});
+
+// Cache-busting HEAD check so a fresh push shows up next open without anyone
+// needing to know to manually refresh — skips reloading while a field is
+// focused so an update never clobbers mid-typing (e.g. the custom region /
+// override-name inputs).
+function isUserTyping() {
+  const el = document.activeElement;
+  return !!(el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'));
+}
+const DEPLOYED_TAG_KEY = 'pc_deployed_tag';
+let deployedVersionTag = (function(){ try{ return localStorage.getItem(DEPLOYED_TAG_KEY); }catch(e){ return null; } })();
+async function checkForUpdate() {
+  try {
+    const res = await fetch(location.pathname+'?_='+Date.now(), {cache:'no-store', method:'HEAD'});
+    const tag = res.headers.get('etag') || res.headers.get('last-modified');
+    if(!tag) return 'unknown';
+    if(deployedVersionTag === null) {
+      deployedVersionTag = tag;
+      try{ localStorage.setItem(DEPLOYED_TAG_KEY, tag); }catch(e){}
+      return 'up-to-date';
+    }
+    if(tag === deployedVersionTag) return 'up-to-date';
+    if(isUserTyping()) return 'deferred';
+    deployedVersionTag = tag;
+    try{ localStorage.setItem(DEPLOYED_TAG_KEY, tag); }catch(e){}
+    location.reload();
+    return 'reloading';
+  } catch(e) { return 'offline'; }
+}
+checkForUpdate();
+document.addEventListener('visibilitychange', function() {
+  if(document.visibilityState === 'visible') checkForUpdate();
+});
+
+// True once actually running as the installed/home-screen app rather than a
+// regular browser tab — display-mode covers Chrome/Edge/Android,
+// navigator.standalone is Safari's own (non-standard, iOS-only) equivalent.
+function isStandaloneApp() {
+  return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true;
+}
+let installPromptAccepted = (function(){ try{ return localStorage.getItem('pc_install_accepted')==='1'; }catch(e){ return false; } })();
+function isInstalled() { return isStandaloneApp() || installPromptAccepted; }
+
+let deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  updateInstallDisplay();
+});
+window.addEventListener('appinstalled', function() {
+  deferredInstallPrompt = null;
+  installPromptAccepted = true;
+  try{ localStorage.setItem('pc_install_accepted', '1'); }catch(e){}
+  updateInstallDisplay();
+});
+
+function updateInstallDisplay() {
+  const val = document.getElementById('settings-install-val');
+  if(!val) return;
+  val.textContent = isInstalled() ? 'Installed ✓' : 'Not installed — tap to install';
+}
+
+async function handleInstallClick() {
+  if(isInstalled()) return;
+  if(deferredInstallPrompt) {
+    const promptEvent = deferredInstallPrompt;
+    deferredInstallPrompt = null; // one-shot — the browser invalidates it after a single use either way
+    promptEvent.prompt();
+    const choice = await promptEvent.userChoice;
+    if(choice.outcome === 'accepted') {
+      installPromptAccepted = true;
+      try{ localStorage.setItem('pc_install_accepted', '1'); }catch(e){}
+    }
+    updateInstallDisplay();
+  } else {
+    // No captured browser-native prompt — either this browser doesn't support
+    // triggering install from a page at all (iOS Safari, plain Firefox), or
+    // Chrome/Edge just hasn't fired beforeinstallprompt yet. The manual path
+    // always works; there's no signal a page can detect for "user actually
+    // finished the manual steps", so this can't flip to Installed on its own.
+    alert('Install Laughing Gnome\n\n' +
+      'iPhone/iPad (Safari): tap the Share icon (square with an arrow up), then "Add to Home Screen".\n\n' +
+      'Android (Chrome): tap the ⋮ menu in the top right, then "Add to Home Screen" or "Install app".\n\n' +
+      'Desktop Chrome/Edge: look for an install icon at the right edge of the address bar, or use the ⋮ menu.');
+  }
+}
+
+// Best-effort ask not to auto-evict this site's storage under low-disk
+// pressure. Chrome auto-grants/denies this based on its own heuristics with
+// no user-visible prompt — this can't force a grant, only ask and log what
+// actually happened, since there's no way to test eviction behavior remotely.
+(async function checkStoragePersistence() {
+  if(!(navigator.storage && navigator.storage.persist)) return;
+  try {
+    let persisted = await (navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false));
+    if(!persisted) persisted = await navigator.storage.persist();
+    if(!persisted) console.warn('Laughing Gnome: storage is NOT persisted — this browser may silently evict saved scans/region under storage pressure. Add to Home Screen for the strongest protection.');
+  } catch(e) {}
+})();
+
+// ════════════════════════════════════════════════════
+//  BACKUP / RESTORE — manual only, never automatic
+// ════════════════════════════════════════════════════
+// Manual-only by design: a fixed schedule/auto-trigger for this Downloads-
+// folder export was tried in an earlier app (Health Score) and produced a
+// pile of files plus a repeat, unsuppressable OS "Download complete"
+// notification on every save. This only ever runs from the explicit
+// "Back Up Now" / "Restore from Backup" taps in Settings.
+
+const BACKUP_HANDLE_DB = 'laughing-gnome-fs', BACKUP_HANDLE_STORE = 'handles', BACKUP_HANDLE_KEY = 'backupFile';
+function openHandleDb() {
+  return new Promise(function(resolve, reject) {
+    const req = indexedDB.open(BACKUP_HANDLE_DB, 1);
+    req.onupgradeneeded = function(){ req.result.createObjectStore(BACKUP_HANDLE_STORE); };
+    req.onsuccess = function(){ resolve(req.result); };
+    req.onerror = function(){ reject(req.error); };
+  });
+}
+async function loadSavedBackupHandle() {
+  try {
+    const db = await openHandleDb();
+    return await new Promise(function(resolve, reject) {
+      const req = db.transaction(BACKUP_HANDLE_STORE, 'readonly').objectStore(BACKUP_HANDLE_STORE).get(BACKUP_HANDLE_KEY);
+      req.onsuccess = function(){ resolve(req.result || null); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  } catch(e) { return null; }
+}
+async function saveBackupHandle(handle) {
+  try {
+    const db = await openHandleDb();
+    await new Promise(function(resolve, reject) {
+      const tx = db.transaction(BACKUP_HANDLE_STORE, 'readwrite');
+      tx.objectStore(BACKUP_HANDLE_STORE).put(handle, BACKUP_HANDLE_KEY);
+      tx.oncomplete = resolve; tx.onerror = function(){ reject(tx.error); };
+    });
+  } catch(e) {}
+}
+// On browsers with the File System Access API (desktop Chrome/Edge — confirmed
+// absent on iOS Safari and most Android Chrome), this overwrites the SAME
+// on-disk file every time instead of creating a new timestamped one each tap.
+async function getWritableBackupHandle() {
+  if(!window.showSaveFilePicker) return null;
+  try {
+    let handle = await loadSavedBackupHandle();
+    if(handle) {
+      const perm = await handle.queryPermission({mode:'readwrite'});
+      if(perm === 'granted') return handle;
+      const req = await handle.requestPermission({mode:'readwrite'});
+      if(req === 'granted') return handle;
+      return null;
+    }
+    handle = await window.showSaveFilePicker({
+      suggestedName: 'laughing-gnome-data.json',
+      types: [{description:'Laughing Gnome backup', accept:{'application/json':['.json']}}]
+    });
+    await saveBackupHandle(handle);
+    return handle;
+  } catch(e) { return null; }
+}
+async function backupNow() {
+  const payload = JSON.stringify({ region: state.region, history: state.history, exportedAt: new Date().toISOString() });
+  const handle = await getWritableBackupHandle();
+  if(handle) {
+    try {
+      const writable = await handle.createWritable();
+      await writable.write(payload);
+      await writable.close();
+      alert('Backup saved.');
+      return;
+    } catch(e) { /* fall through to the timestamped-download fallback below */ }
+  }
+  try {
+    const blob = new Blob([payload], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    // Timestamped, not a fixed name — a fixed name hits a hard "file already
+    // exists" error on browsers that land here (no File System Access API,
+    // or no granted handle yet) rather than a silent auto-rename.
+    const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+    a.download = 'laughing-gnome-data-' + stamp + '.json';
+    a.click();
+    alert('Backup saved.');
+  } catch(e) { alert('Backup failed: ' + e.message); }
+}
+
+// On browsers that support it (desktop Chrome/Edge), jumps the native picker
+// straight into the Downloads folder and allows multi-select in one go;
+// falls back to the plain <input type=file multiple> everywhere else (iOS
+// Safari, most Android Chrome — confirmed no File System Access API there).
+async function triggerRestoreBackup() {
+  if(window.showOpenFilePicker) {
+    try {
+      const handles = await window.showOpenFilePicker({
+        multiple: true,
+        startIn: 'downloads',
+        types: [{description:'Laughing Gnome backup', accept:{
+          'application/json':['.json'],
+          'text/javascript':['.js'],
+          'application/javascript':['.js']
+        }}]
+      });
+      const files = await Promise.all(handles.map(function(h){ return h.getFile(); }));
+      importLatestBackupFromFiles(files);
+      return;
+    } catch(e) {
+      if(e.name === 'AbortError') return; // user backed out of the picker — don't chain into a second one
+    }
+  }
+  document.getElementById('restore-backup-input').click();
+}
+function handleRestoreInput(input) {
+  const files = input.files;
+  input.value = '';
+  importLatestBackupFromFiles(files);
+}
+// Picks the newest Laughing Gnome backup out of one or more selected files —
+// matches this app's own timestamped filename first (sorts correctly as a
+// string, no file reads needed), falling back to the File object's own
+// lastModified for anything that doesn't match (e.g. a renamed file).
+function pickLatestBackupFile(files) {
+  const list = Array.from(files || []).filter(function(f){ return /\.(json|js)$/i.test(f.name); });
+  if(list.length === 0) return null;
+  const stampOf = function(f) {
+    const m = f.name.match(/laughing-gnome-data-(.+)\.(?:json|js)$/i);
+    return m ? m[1] : null;
+  };
+  list.sort(function(a, b) {
+    const sa = stampOf(a), sb = stampOf(b);
+    if(sa && sb) return sa < sb ? 1 : sa > sb ? -1 : 0;
+    if(sa && !sb) return -1;
+    if(sb && !sa) return 1;
+    return b.lastModified - a.lastModified;
+  });
+  return list[0];
+}
+function importLatestBackupFromFiles(files) {
+  const latest = pickLatestBackupFile(files);
+  if(!latest) { if(files && files.length) alert('No .json or .js backup file found in what you selected.'); return; }
+  importDataFromFile(latest);
+}
+async function importDataFromFile(file) {
+  if(!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if(!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.history)) throw new Error('This file does not look like a Laughing Gnome backup.');
+    if(!confirm('This will replace all current scans and region on this device with the contents of the imported file. Continue?')) return;
+    state.history = parsed.history;
+    state.region = (parsed.region && typeof parsed.region === 'object') ? parsed.region : null;
+    localStorage.setItem('pc_history', JSON.stringify(state.history));
+    localStorage.setItem('pc_region', JSON.stringify(state.region));
+    updateRegionBadge();
+    renderHistory();
+    updateSettingsDisplay();
+    alert('Data imported.');
+  } catch(e) {
+    alert('Could not import that file: ' + e.message);
+  }
+}
+
 </script>
 </body>
 </html>
