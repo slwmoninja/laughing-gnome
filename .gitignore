@@ -3,8 +3,10 @@
 Thumbs.db
 
 # Local source copy + unused design assets (all imagery is embedded as base64 in index.html)
-ThePlantDoctor.html
+LaughingGnome.html
 Arrow.jpg
 Camera.jpg
 PlantBanner2.png
 Plant_background.png
+LaughingGnome_Icon.png
+LaughingGnome_Title.png

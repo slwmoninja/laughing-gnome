@@ -1,5 +1,5 @@
 /**
- * The Plant Doctor — Cloudflare Worker Proxy (Pl@ntNet + Gemini backend — free tier)
+ * Laughing Gnome — Cloudflare Worker Proxy (Pl@ntNet + Gemini backend — free tier)
  *
  * SETUP (one-time, ~5 minutes):
  * ──────────────────────────────
@@ -11,7 +11,7 @@
  * 4. Click "Create a Worker"
  * 5. Delete all existing code in the editor and paste THIS entire file
  * 6. Click "Save and Deploy"
- * 7. Copy your Worker URL (looks like: https://plant-doctor.YOURNAME.workers.dev)
+ * 7. Copy your Worker URL (looks like: https://laughing-gnome.YOURNAME.workers.dev)
  *
  * ADD YOUR API KEYS AS SECRETS:
  * 8. In the Worker dashboard → click "Settings" tab → "Variables and Secrets"
