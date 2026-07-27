@@ -624,6 +624,11 @@ const TAB_SCREENS = ['camera','history','settings'];
 
 function showScreen(name) {
   if(state.currentScreen === 'camera' && name !== 'camera') stopLiveCamera();
+  // Any staged photo(s) belong only to the scan that was actually submitted —
+  // once saved, that scan lives in History. Landing back on Identify by any
+  // path (tab tap, Home, back gesture) should always show the plain guidance
+  // text, never a leftover thumbnail strip from a scan already finished.
+  if(name === 'camera') { state.photos = []; renderPhotoStrip(); }
 
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   const el = document.getElementById('screen-' + name);
