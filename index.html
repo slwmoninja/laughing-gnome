@@ -600,7 +600,6 @@ function showScreen(name) {
     tabbar.classList.remove('visible');
   }
 
-  if(name === 'camera') setTimeout(initLiveCamera, 80);
   if(name === 'history') renderHistory();
   if(name === 'settings') updateSettingsDisplay();
 }
@@ -781,9 +780,11 @@ function captureFromLiveFeed() {
   goToAnalysis();
 }
 
-function takePicture() {
+async function takePicture() {
   if(state.photos.length >= MAX_PHOTOS) { alert('Maximum 3 photos per scan.'); return; }
   if(_camStream) { captureFromLiveFeed(); return; }
+  await initLiveCamera();
+  if(_camStream) return; // camera now live — tap again to capture
   const tip = document.getElementById('camera-tip');
   tip.classList.add('visible');
   setTimeout(function() {
