@@ -238,7 +238,6 @@ input{font-family:inherit}
   <div class="ob-body">
     <div class="ob-features">
       <div class="ob-feat"><div class="ob-feat-icon">📷</div><span class="ob-feat-text">Identify any plant from a photo</span></div>
-      <div class="ob-feat"><div class="ob-feat-icon">💚</div><span class="ob-feat-text">Personalized care guidance for your plant</span></div>
       <div class="ob-feat"><div class="ob-feat-icon">☀️</div><span class="ob-feat-text">Region-specific care recommendations</span></div>
       <div class="ob-feat"><div class="ob-feat-icon">🛒</div><span class="ob-feat-text">Find products and local nurseries</span></div>
     </div>
@@ -478,6 +477,7 @@ input{font-family:inherit}
 //  DATA — Countries & Regions
 // ════════════════════════════════════════════════════
 const COUNTRIES = [
+  {name:'Skip — no location',code:'SKIP',states:[]},
   {name:'United States',code:'US',states:['Alabama','Alaska','Arizona','Arkansas','California','Colorado','Connecticut','Delaware','Florida','Georgia','Hawaii','Idaho','Illinois','Indiana','Iowa','Kansas','Kentucky','Louisiana','Maine','Maryland','Massachusetts','Michigan','Minnesota','Mississippi','Missouri','Montana','Nebraska','Nevada','New Hampshire','New Jersey','New Mexico','New York','North Carolina','North Dakota','Ohio','Oklahoma','Oregon','Pennsylvania','Rhode Island','South Carolina','South Dakota','Tennessee','Texas','Utah','Vermont','Virginia','Washington','West Virginia','Wisconsin','Wyoming','Washington D.C.']},
   {name:'Canada',code:'CA',states:['Alberta','British Columbia','Manitoba','New Brunswick','Newfoundland and Labrador','Northwest Territories','Nova Scotia','Nunavut','Ontario','Prince Edward Island','Quebec','Saskatchewan','Yukon']},
   {name:'United Kingdom',code:'GB',states:['England - South East','England - South West','England - London','England - East','England - East Midlands','England - West Midlands','England - Yorkshire','England - North West','England - North East','Scotland','Wales','Northern Ireland']},
@@ -584,7 +584,7 @@ window.addEventListener('load', function() {
   // so back from here exits the app instead of landing on a stale/incomplete
   // state object. Every screen change after this goes through navigateTo(),
   // which pushes.
-  if(state.region) {
+  if(state.region || localStorage.getItem('pc_onboarding_done')) {
     showScreen('camera');
   } else {
     showScreen('onboarding');
@@ -671,11 +671,14 @@ function updateSettingsDisplay() {
 //  ONBOARDING
 // ════════════════════════════════════════════════════
 let pendingOnboardingRegion = null;
+let onboardingLocationDecided = false;
 
 function completeOnboarding() {
-  if(!pendingOnboardingRegion) return;
+  if(!onboardingLocationDecided) return;
   state.region = pendingOnboardingRegion;
-  localStorage.setItem('pc_region', JSON.stringify(state.region));
+  if(state.region) localStorage.setItem('pc_region', JSON.stringify(state.region));
+  else localStorage.removeItem('pc_region');
+  localStorage.setItem('pc_onboarding_done', '1');
   showScreen('camera');
   // New baseline, not a pushed entry — onboarding is a one-time setup flow,
   // not a screen back should ever return to.
@@ -734,6 +737,7 @@ function renderRegionList() {
 }
 
 function selectCountry(code) {
+  if(code === 'SKIP') { skipRegion(); return; }
   state.selectedCountry = COUNTRIES.find(c => c.code === code);
   state.regionStep = 'state';
   document.getElementById('region-modal-title').textContent = code === 'US' ? 'Select State' : 'Select Region';
@@ -773,6 +777,7 @@ function applyRegion(region) {
   document.getElementById('region-modal').classList.remove('open');
   if(state.regionPickerContext === 'onboarding') {
     pendingOnboardingRegion = region;
+    onboardingLocationDecided = true;
     const disp = document.getElementById('ob-region-display');
     disp.innerHTML = `<div class="loc-btn-country">${region.country}</div><div class="loc-btn-state">${region.state}</div>`;
     disp.className = 'loc-btn-text';
@@ -781,6 +786,23 @@ function applyRegion(region) {
   } else {
     state.region = region;
     localStorage.setItem('pc_region', JSON.stringify(state.region));
+    updateSettingsDisplay();
+  }
+}
+
+function skipRegion() {
+  document.getElementById('region-modal').classList.remove('open');
+  if(state.regionPickerContext === 'onboarding') {
+    pendingOnboardingRegion = null;
+    onboardingLocationDecided = true;
+    const disp = document.getElementById('ob-region-display');
+    disp.textContent = 'Skipped — no localized suggestions';
+    disp.className = 'loc-btn-placeholder';
+    document.getElementById('ob-loc-confirmed').style.display = 'none';
+    document.getElementById('ob-start-btn').disabled = false;
+  } else {
+    state.region = null;
+    localStorage.removeItem('pc_region');
     updateSettingsDisplay();
   }
 }
@@ -1006,11 +1028,13 @@ async function startAnalysis(overrideName, overrideSci) {
 
     state.result = { ...idResult, recommendations: recs, products, overrideName: overrideName || null };
 
-    // Step 3: AI-enhanced care tips via Worker (optional)
-    try {
-      const aiRecs = await callCareTips(idResult.identification, state.region);
-      if(aiRecs && aiRecs.length > 0) state.result.recommendations = aiRecs;
-    } catch(e) { /* silently use built-in */ }
+    // Step 3: AI-enhanced care tips via Worker (optional, needs a region)
+    if(state.region) {
+      try {
+        const aiRecs = await callCareTips(idResult.identification, state.region);
+        if(aiRecs && aiRecs.length > 0) state.result.recommendations = aiRecs;
+      } catch(e) { /* silently use built-in */ }
+    }
 
     renderResults(photoHtml);
     autoSaveScan();
@@ -1073,10 +1097,12 @@ async function applyOverride(name, sci) {
 
     setDot(2);
 
-    try {
-      const aiRecs = await callCareTips(identification, state.region);
-      if(aiRecs && aiRecs.length > 0) state.result.recommendations = aiRecs;
-    } catch(e) { /* use built-in recs */ }
+    if(state.region) {
+      try {
+        const aiRecs = await callCareTips(identification, state.region);
+        if(aiRecs && aiRecs.length > 0) state.result.recommendations = aiRecs;
+      } catch(e) { /* use built-in recs */ }
+    }
 
     renderResults(photoHtml);
     autoSaveScan();
