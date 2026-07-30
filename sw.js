@@ -14,6 +14,18 @@
 // that request is excluded below (method!=='GET') and always goes straight to
 // the network untouched, so staleness still gets caught and reloaded exactly
 // as before.
+//
+// manifest.json and the icon files are the one exception: they're served
+// network-first instead (fall back to cache only if offline). Android/
+// Chrome's installed-PWA (WebAPK) icon-update check reads the manifest
+// client-side and only re-fetches an icon when its URL changes (it diffs the
+// icons array, not pixel bytes) -- and uninstalling a WebAPK on Android does
+// NOT clear this service worker/cache (that data lives in the browser
+// profile, not the WebAPK package). So a stale cached manifest here could
+// make even a freshly reinstalled icon look stale. See scripts/
+// sync_icon_version.py, which stamps manifest.json's icon src URLs with a
+// content hash whenever the icon files change, so a real icon update always
+// gets a new URL for this check to notice.
 const CACHE_NAME = 'laughing-gnome-shell-v1';
 const PRECACHE_URLS = [
   './index.html', './manifest.json', './icon-192.png', './icon-512.png'
@@ -38,6 +50,20 @@ self.addEventListener('fetch', (e)=>{
   // passes straight through untouched.
   if(req.method!=='GET' || url.origin!==location.origin){
     e.respondWith(fetch(req));
+    return;
+  }
+  if(/\/(manifest\.json|icon-(192|512)\.png)$/.test(url.pathname)){
+    // Network-first -- see the top-of-file comment.
+    e.respondWith((async ()=>{
+      try{
+        const res = await fetch(req);
+        if(res && res.ok){ const cache = await caches.open(CACHE_NAME); cache.put(req, res.clone()); }
+        return res;
+      }catch(err){
+        const cached = await caches.match(req);
+        return cached || Response.error();
+      }
+    })());
     return;
   }
   e.respondWith((async ()=>{
