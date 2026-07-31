@@ -1868,8 +1868,9 @@ function updateInstallDisplay() {
   });
 }
 
-async function handleInstallClick() {
-  if(isInstalled()) { openInfoModal('Uninstall', UNINSTALL_STEPS_HTML); return; }
+// Shared by the topbar Install button's tap and the proactive install-prompt
+// modal's "Install" button below -- one native-vs-manual branch, not two.
+async function triggerInstall() {
   if(deferredInstallPrompt) {
     const promptEvent = deferredInstallPrompt;
     deferredInstallPrompt = null; // one-shot — the browser invalidates it after a single use either way
@@ -1889,6 +1890,41 @@ async function handleInstallClick() {
     openInfoModal('Install Laughing Gnome', INSTALL_STEPS_HTML);
   }
 }
+function handleInstallClick() {
+  if(isInstalled()) { openInfoModal('Uninstall', UNINSTALL_STEPS_HTML); return; }
+  triggerInstall();
+}
+// Proactive "Install Laughing Gnome?" prompt, shown once (ever, per device)
+// on a fresh open when not already installed -- asked, not assumed:
+// declining just closes it and points at Settings' Install button for later,
+// and the asked-flag is set either way so this never nags on a later visit.
+// A short delay lets beforeinstallprompt (which can arrive a moment after
+// load) have a chance to populate deferredInstallPrompt first, so "Install"
+// here has the same shot at the fast native one-tap path as the topbar
+// button does.
+const INSTALL_PROMPT_ASKED_KEY = 'pc_install_prompt_asked';
+function maybeShowInstallPrompt() {
+  if(isInstalled()) return;
+  try{ if(localStorage.getItem(INSTALL_PROMPT_ASKED_KEY)) return; }catch(e){}
+  setTimeout(function(){
+    if(isInstalled()) return; // could have installed (or been asked elsewhere) during the delay
+    try{ localStorage.setItem(INSTALL_PROMPT_ASKED_KEY, '1'); }catch(e){}
+    openInfoModal('Install Laughing Gnome?', `
+      <div style="margin-bottom:14px">Installing adds Laughing Gnome to your Home Screen and gives it the strongest protection against your browser silently clearing its data.</div>
+      <button class="btn btn-primary" id="install-prompt-yes" style="width:100%;margin-bottom:8px">Install</button>
+      <button class="btn btn-secondary" id="install-prompt-no" style="width:100%">Not now</button>
+    `);
+    document.getElementById('install-prompt-yes').addEventListener('click', function(){
+      document.getElementById('info-overlay').parentElement.remove();
+      triggerInstall();
+    });
+    document.getElementById('install-prompt-no').addEventListener('click', function(){
+      document.getElementById('info-overlay').parentElement.remove();
+      alert('No problem — look for the Install button in Settings whenever you\'re ready.');
+    });
+  }, 1500);
+}
+maybeShowInstallPrompt();
 
 // No web API lets a page force-remove its own Home Screen/taskbar shortcut --
 // that's a strictly user-driven OS action (see UNINSTALL_STEPS_HTML/
