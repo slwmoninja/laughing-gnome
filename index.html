@@ -379,6 +379,10 @@ input{font-family:inherit}
             <div class="settings-row-icon">📂</div>
             <div class="settings-row-title">Restore from Backup</div>
           </div>
+          <div class="settings-row" onclick="eraseAllData()" style="cursor:pointer">
+            <div class="settings-row-icon red">🗑️</div>
+            <div class="settings-row-title" style="color:var(--err)">Erase All Data</div>
+          </div>
         </div>
         <input type="file" id="restore-backup-input" accept=".json,.js,application/json" multiple style="display:none" onchange="handleRestoreInput(this)">
       </div>
@@ -1779,14 +1783,77 @@ window.addEventListener('appinstalled', function() {
   updateInstallDisplay();
 });
 
+// Generic reusable info popup (install/uninstall steps, etc.) -- built from
+// the same modal-overlay/modal-sheet/modal-header markup used elsewhere in
+// this app, just with dynamic title/body instead of a dedicated hand-built
+// dialog per use. See openInfoModal calls in handleInstallClick below.
+function openInfoModal(title, bodyHtml) {
+  const wrap = document.createElement('div');
+  wrap.innerHTML = `
+  <div class="modal-overlay open" id="info-overlay">
+    <div class="modal-sheet" style="max-height:none" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div class="modal-title">${title}</div>
+        <button class="modal-close" id="info-close">✕</button>
+      </div>
+      <div style="font-size:14px;line-height:1.5">${bodyHtml}</div>
+    </div>
+  </div>`;
+  document.body.appendChild(wrap);
+  const close = function(){ wrap.remove(); };
+  wrap.querySelector('#info-close').addEventListener('click', close);
+  wrap.querySelector('#info-overlay').addEventListener('click', function(e) {
+    if(e.target === e.currentTarget) close();
+  });
+}
+const STEPS_LIST_STYLE = 'margin:4px 0 0;padding-left:18px;';
+const INSTALL_STEPS_HTML = `
+  <strong>iPhone/iPad (Safari):</strong>
+  <ol style="${STEPS_LIST_STYLE}">
+    <li>Tap the Share icon (square with an arrow) in the toolbar.</li>
+    <li>Scroll down and tap "Add to Home Screen".</li>
+    <li>Tap "Add" in the top right.</li>
+  </ol><br>
+  <strong>Android (Chrome):</strong>
+  <ol style="${STEPS_LIST_STYLE}">
+    <li>Tap the &#8942; menu in the top right.</li>
+    <li>Tap "Add to Home screen" or "Install app".</li>
+    <li>Tap "Install" (or "Add") to confirm.</li>
+  </ol><br>
+  <strong>Desktop Chrome/Edge:</strong>
+  <ol style="${STEPS_LIST_STYLE}">
+    <li>Click the install icon at the right edge of the address bar (or the &#8942; menu).</li>
+    <li>Click "Install" to confirm.</li>
+  </ol>`;
+const UNINSTALL_STEPS_HTML = `
+  <strong>iPhone/iPad:</strong>
+  <ol style="${STEPS_LIST_STYLE}">
+    <li>Touch and hold the Laughing Gnome icon on the Home Screen.</li>
+    <li>Tap "Remove App".</li>
+    <li>Tap "Delete App" to confirm.</li>
+  </ol><br>
+  <strong>Android:</strong>
+  <ol style="${STEPS_LIST_STYLE}">
+    <li>Touch and hold the Laughing Gnome icon on the Home screen.</li>
+    <li>Tap "Uninstall" (or drag it to "Uninstall" at the top of the screen).</li>
+    <li>Confirm when prompted.</li>
+  </ol><br>
+  <strong>Desktop Chrome/Edge:</strong>
+  <ol style="${STEPS_LIST_STYLE}">
+    <li>Right-click the Laughing Gnome icon (Start Menu/Taskbar/Dock).</li>
+    <li>Click "Uninstall".</li>
+    <li>Confirm when prompted.</li>
+  </ol>
+  <p style="font-size:12px;color:var(--muted);margin-top:0.6rem">To erase your saved scans and region on this device instead of just removing the icon, use "Erase All Data" in Settings &gt; Backup.</p>`;
+
 // Shown top-right on every main screen's topbar, same row as the heading, so
 // the call-to-action is visible immediately no matter where the user lands —
 // not just tucked into Settings. Once actually installed there's nothing
 // left to act on there, so it disappears from Identify/History; Settings
 // keeps showing it as an inert "Installed" status line instead, since that's
-// the one place people go looking to confirm state. Not disabled once
-// installed (a plain tap just no-ops, see handleInstallClick) so it can
-// still receive the long-press that opens Re-Install/Uninstall below.
+// the one place people go looking to confirm state. Label always mirrors
+// isInstalled() directly -- see handleInstallClick for what a tap in each
+// state actually does.
 const INSTALL_BTN_IDS = { 'install-btn-camera': false, 'install-btn-history': false, 'install-btn-settings': true };
 function updateInstallDisplay() {
   const installed = isInstalled();
@@ -1802,7 +1869,7 @@ function updateInstallDisplay() {
 }
 
 async function handleInstallClick() {
-  if(isInstalled()) return;
+  if(isInstalled()) { openInfoModal('Uninstall', UNINSTALL_STEPS_HTML); return; }
   if(deferredInstallPrompt) {
     const promptEvent = deferredInstallPrompt;
     deferredInstallPrompt = null; // one-shot — the browser invalidates it after a single use either way
@@ -1819,103 +1886,30 @@ async function handleInstallClick() {
     // Chrome/Edge just hasn't fired beforeinstallprompt yet. The manual path
     // always works; there's no signal a page can detect for "user actually
     // finished the manual steps", so this can't flip to Installed on its own.
-    alert('Install Laughing Gnome\n\n' +
-      'iPhone/iPad (Safari): tap the Share icon (square with an arrow up), then "Add to Home Screen".\n\n' +
-      'Android (Chrome): tap the ⋮ menu in the top right, then "Add to Home Screen" or "Install app".\n\n' +
-      'Desktop Chrome/Edge: look for an install icon at the right edge of the address bar, or use the ⋮ menu.');
+    openInfoModal('Install Laughing Gnome', INSTALL_STEPS_HTML);
   }
 }
 
-// Holding an "Installed" pill opens Re-Install/Uninstall — pointerdown/up
-// timing (not the "contextmenu" event) so it behaves the same on a mouse and
-// on touch, and so a normal tap that starts turning into a scroll
-// (pointermove past MOVE_TOLERANCE) cancels cleanly instead of firing.
-(function wireInstallLongPress() {
-  const HOLD_MS = 550, MOVE_TOLERANCE = 10;
-  Object.keys(INSTALL_BTN_IDS).forEach(function(id) {
-    const btn = document.getElementById(id);
-    if(!btn) return;
-    let holdTimer = null, holdStart = null;
-    const cancelHold = function(){ if(holdTimer){ clearTimeout(holdTimer); holdTimer = null; } holdStart = null; };
-    btn.addEventListener('pointerdown', function(e) {
-      if(!isInstalled()) return;
-      holdStart = [e.clientX, e.clientY];
-      holdTimer = setTimeout(function(){ holdTimer = null; openInstallActionsModal(); }, HOLD_MS);
-    });
-    btn.addEventListener('pointermove', function(e) {
-      if(!holdTimer || !holdStart) return;
-      if(Math.hypot(e.clientX-holdStart[0], e.clientY-holdStart[1]) > MOVE_TOLERANCE) cancelHold();
-    });
-    ['pointerup','pointercancel','pointerleave'].forEach(function(evt){ btn.addEventListener(evt, cancelHold); });
-    btn.addEventListener('contextmenu', function(e){ if(isInstalled()) e.preventDefault(); }); // swallow the native long-press menu
-  });
-})();
-
-function openInstallActionsModal() {
-  const wrap = document.createElement('div');
-  wrap.innerHTML = `
-  <div class="modal-overlay open" id="ia-overlay">
-    <div class="modal-sheet" style="max-height:none" onclick="event.stopPropagation()">
-      <div class="modal-header">
-        <div class="modal-title">Installed</div>
-        <button class="modal-close" id="ia-close">✕</button>
-      </div>
-      <button class="btn btn-primary" id="ia-reinstall">Re-Install</button>
-      <div style="font-size:12px;color:var(--muted);margin:8px 0 14px">Keeps your data — refreshes the app's code immediately, no confirmation needed.</div>
-      <button class="btn btn-secondary" id="ia-uninstall" style="color:var(--err)">Uninstall</button>
-      <div style="font-size:12px;color:var(--muted);margin-top:8px">Keeps your data too, by default — you'll be asked separately if you also want it deleted.</div>
-    </div>
-  </div>`;
-  document.body.appendChild(wrap);
-  // The finger/mouse release that ends the long-press which opened this modal
-  // still has its own trailing "click" event to fire — ignoring overlay
-  // clicks in the first moment after opening (well under human reaction
-  // time) keeps it open until an intentional dismiss.
-  const openedAt = Date.now();
-  const close = function(){ wrap.remove(); };
-  wrap.querySelector('#ia-close').addEventListener('click', close);
-  wrap.querySelector('#ia-overlay').addEventListener('click', function(e) {
-    if(e.target === e.currentTarget && Date.now()-openedAt > 350) close();
-  });
-  wrap.querySelector('#ia-reinstall').addEventListener('click', function(){ close(); reinstallApp(); });
-  wrap.querySelector('#ia-uninstall').addEventListener('click', function(){ close(); uninstallApp(); });
-}
-// Clears every cache layer this page can reach (service worker registration
-// + Cache Storage entries from sw.js) then forces a cache-busted reload right
-// now. Data is untouched (nothing here ever touches localStorage). This
-// can't make the OS re-fetch the *icon* for an already-placed Home
-// Screen/taskbar shortcut — that image is only ever captured once, at
-// install time — but the code it launches next time is guaranteed fresh.
-function reinstallApp() {
-  if(navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
-    navigator.serviceWorker.getRegistrations().then(function(regs){ regs.forEach(function(r){ r.unregister(); }); });
-  }
-  if(window.caches && caches.keys) {
-    caches.keys().then(function(keys){ keys.forEach(function(k){ caches.delete(k); }); });
-  }
-  location.href = location.pathname + '?_reinstall=' + Date.now();
-}
-// No web API lets a page force-remove its own Home Screen/taskbar shortcut —
-// that's an OS-level action only the user can take — so this only clears
-// Laughing Gnome's own belief that it's installed here, which flips the
-// topbar pill back to "Install". If this is running *as* the installed app
-// right now, isInstalled() still reports true afterward (isStandaloneApp()
-// alone already covers that) until the shortcut is actually removed and the
-// site reopened in a normal tab — that's correct, not a bug.
-function uninstallApp() {
-  if(!confirm('Uninstall Laughing Gnome on this device? The Home Screen/taskbar icon itself has to be removed separately — this just clears the "Installed" status here. Continue?')) return;
-  installPromptAccepted = false;
-  try{ localStorage.removeItem('pc_install_accepted'); }catch(e){}
-  if(confirm('Also delete all Laughing Gnome data (saved scans and region) on this device? This cannot be undone.')) {
-    localStorage.removeItem('pc_history');
-    localStorage.removeItem('pc_region');
-    state.history = [];
-    state.region = null;
-  }
-  updateInstallDisplay();
+// No web API lets a page force-remove its own Home Screen/taskbar shortcut --
+// that's a strictly user-driven OS action (see UNINSTALL_STEPS_HTML/
+// INSTALL_STEPS_HTML above). The old Re-Install button here only ever forced
+// a cache-clear-and-reload a bit earlier than checkForUpdate()'s own periodic
+// check would have caught it anyway, so it's dropped rather than kept as a
+// manual duplicate of that (same call made for HealthScore/BibleStudy).
+//
+// Erasing local data has no OS-level equivalent though, and "Clear All" in
+// History only covers saved scans, not the region setting -- so it stays as
+// an explicit, standalone Settings action, decoupled from the Install pill
+// (which is now purely informational, see handleInstallClick).
+function eraseAllData() {
+  if(!confirm('Erase all Laughing Gnome data (saved scans and region) on this device? This cannot be undone.')) return;
+  localStorage.removeItem('pc_history');
+  localStorage.removeItem('pc_region');
+  state.history = [];
+  state.region = null;
   updateSettingsDisplay();
   renderHistory();
-  alert('Uninstalled. Remove the Home Screen/taskbar icon yourself to finish (steps in the Install pill\'s instructions).');
+  alert('All data erased.');
 }
 
 // Best-effort ask not to auto-evict this site's storage under low-disk
