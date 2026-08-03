@@ -219,6 +219,33 @@ input{font-family:inherit}
 #camera-tip{position:fixed;bottom:140px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.82);color:#fff;padding:13px 22px;border-radius:20px;font-size:14px;font-weight:600;z-index:200;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .25s ease}
 #camera-tip.visible{opacity:1}
 
+/* ── Export to PDF (built as a hidden print-only view, populated right
+   before window.print() — see exportResultsToPdf) ── */
+.export-pdf-btn{width:40px;height:40px;display:none;align-items:center;justify-content:center;border-radius:50%;color:var(--text)}
+.export-pdf-btn.visible{display:flex}
+#pdf-export-area{display:none}
+.pdf-header{display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid var(--green);padding-bottom:10px;margin-bottom:16px}
+.pdf-app-name{font-size:16px;font-weight:800;color:var(--green)}
+.pdf-date{font-size:12px;color:var(--muted)}
+.pdf-photo{width:100%;max-height:320px;object-fit:cover;border-radius:12px;margin-bottom:14px}
+.pdf-plant-name{font-size:24px;font-weight:800;margin-bottom:2px}
+.pdf-sci-name{font-size:14px;font-style:italic;color:var(--muted);margin-bottom:10px}
+.pdf-toxicity{font-size:13px;font-weight:600;color:var(--warn);background:var(--warn-bg);border-radius:8px;padding:6px 10px;display:inline-block;margin-bottom:10px}
+.pdf-desc{font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:6px}
+.pdf-section-title{font-size:16px;font-weight:800;color:var(--green);margin:20px 0 10px;border-bottom:1px solid var(--border);padding-bottom:6px}
+.pdf-rec-row{margin-bottom:12px;break-inside:avoid}
+.pdf-rec-title{font-size:14px;font-weight:700}
+.pdf-rec-desc{font-size:13px;color:var(--muted);line-height:1.5;margin-top:2px}
+.pdf-prod-row{margin-bottom:12px;break-inside:avoid}
+.pdf-prod-name{font-size:14px;font-weight:700}
+.pdf-prod-desc{font-size:12px;color:var(--muted);line-height:1.4;margin-top:1px}
+.pdf-prod-link{font-size:12px;color:var(--green);word-break:break-all}
+@media print{
+  body *{visibility:hidden}
+  #pdf-export-area,#pdf-export-area *{visibility:visible}
+  #pdf-export-area{display:block;position:absolute;left:0;top:0;width:100%;padding:24px}
+}
+
 /* ── App banner ── */
 .cam-banner{width:100%;height:170px;object-fit:cover;display:block;flex-shrink:0;object-position:left center}
 
@@ -302,7 +329,9 @@ input{font-family:inherit}
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="22" height="22"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
     </button>
     <span class="hbar-title">Plant Analysis</span>
-    <div style="width:40px"></div>
+    <button class="export-pdf-btn" id="export-pdf-btn" onclick="exportResultsToPdf()" title="Export to PDF">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="20" height="20"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    </button>
   </div>
   <div class="scroll">
     <div class="scroll-pad" id="results-content">
@@ -310,6 +339,7 @@ input{font-family:inherit}
     </div>
   </div>
 </div>
+<div id="pdf-export-area"><!-- filled by exportResultsToPdf right before printing --></div>
 
 <!-- ═══ HISTORY ═══ -->
 <div id="screen-history" class="screen">
@@ -464,7 +494,12 @@ input{font-family:inherit}
   <div class="modal-sheet" style="max-height:90vh" onclick="event.stopPropagation()">
     <div class="modal-header">
       <div class="modal-title" id="detail-modal-title">Plant Details</div>
-      <button class="modal-close" onclick="closeDetailModal()">✕</button>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="export-pdf-btn visible" style="width:32px;height:32px" onclick="exportHistoryScanToPdf()" title="Export to PDF">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </button>
+        <button class="modal-close" onclick="closeDetailModal()">✕</button>
+      </div>
     </div>
     <div style="overflow-y:auto;flex:1">
       <div id="detail-modal-content" style="padding:12px 4px;display:flex;flex-direction:column;gap:14px"></div>
@@ -573,6 +608,7 @@ let state = {
   selectedCountry: null,
   overrideSuggestions: [],
   scanSaved: false,
+  currentDetailScanId: null,  // which history scan is open in the detail modal — see openDetailModal/exportHistoryScanToPdf
 };
 
 // ════════════════════════════════════════════════════
@@ -968,6 +1004,7 @@ function closeResults() {
   renderPhotoStrip();
   navigateTo('camera');
   document.getElementById('tabbar').classList.add('visible');
+  document.getElementById('export-pdf-btn').classList.remove('visible');
 }
 
 function goHome() {
@@ -983,6 +1020,7 @@ function goHome() {
 // ════════════════════════════════════════════════════
 async function startAnalysis(overrideName, overrideSci) {
   const content = document.getElementById('results-content');
+  document.getElementById('export-pdf-btn').classList.remove('visible');
 
   // Show photos
   const photoHtml = `
@@ -1493,6 +1531,77 @@ function renderResults(photoHtml) {
       📷 Scan Another Plant
     </button>
   `;
+
+  document.getElementById('export-pdf-btn').classList.add('visible');
+}
+
+// ════════════════════════════════════════════════════
+//  EXPORT TO PDF
+// ════════════════════════════════════════════════════
+// Renders the same identification/care/shopping data as renderResults()
+// into a print-only view (see #pdf-export-area / @media print), then hands
+// off to the browser's own print-to-PDF — no PDF library, no network
+// dependency, and it keeps working offline. Product rows become real <a
+// href> tags here (renderResults uses onclick+window.open for the live
+// screen) since a static PDF has no click handlers — the href is what
+// survives into the printed/saved document as a clickable link.
+// Shared by both export entry points (live result and a saved History scan)
+// — takes plain data rather than reading state.result directly, since a
+// History scan has the same identification/recommendations/products shape
+// but isn't state.result.
+function buildPdfContent(identification, recommendations, products, overrideName, photoUrl, dateStr) {
+  const id = identification;
+  const commonName = overrideName || (id.commonName !== id.scientificName ? id.commonName : '');
+  dateStr = dateStr || new Date().toLocaleDateString(undefined, {year:'numeric', month:'long', day:'numeric'});
+
+  const recsHtml = (recommendations || []).map(function(rec) {
+    return `<div class="pdf-rec-row">
+      <div class="pdf-rec-title">${rec.icon || '🌿'} ${escHtml(rec.title)}${rec.frequency ? ' — ' + escHtml(rec.frequency) : ''}</div>
+      <div class="pdf-rec-desc">${escHtml(rec.description)}</div>
+    </div>`;
+  }).join('');
+
+  const prodsHtml = (products || []).map(function(p) {
+    return `<div class="pdf-prod-row">
+      <div class="pdf-prod-name">${p.icon || ''} ${escHtml(p.name)}</div>
+      <div class="pdf-prod-desc">${escHtml(p.desc)}</div>
+      <a class="pdf-prod-link" href="${p.url}">${p.url}</a>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="pdf-header">
+      <div class="pdf-app-name">🌿 Laughing Gnome</div>
+      <div class="pdf-date">${dateStr}</div>
+    </div>
+    ${photoUrl ? `<img class="pdf-photo" src="${photoUrl}">` : ''}
+    <div class="pdf-plant-name">${commonName ? escHtml(commonName) : escHtml(id.scientificName)}</div>
+    ${commonName ? `<div class="pdf-sci-name">${escHtml(id.scientificName)}</div>` : ''}
+    ${id.careDetails?.toxicity ? `<div class="pdf-toxicity">⚠️ ${escHtml(id.careDetails.toxicity)}</div>` : ''}
+    ${id.description ? `<div class="pdf-desc">${escHtml(id.description)}</div>` : ''}
+    <div class="pdf-section-title">☀️ Care Recommendations</div>
+    ${recsHtml}
+    <div class="pdf-section-title">🛒 Products &amp; Local Shopping</div>
+    ${prodsHtml}
+  `;
+}
+
+function exportResultsToPdf() {
+  const r = state.result;
+  if(!r) return;
+  const photoUrl = state.photos[0]?.previewUrl || '';
+  document.getElementById('pdf-export-area').innerHTML =
+    buildPdfContent(r.identification, r.recommendations, r.products, r.overrideName, photoUrl);
+  window.print();
+}
+
+function exportHistoryScanToPdf() {
+  const scan = state.history.find(function(s){ return s.id === state.currentDetailScanId; });
+  if(!scan) return;
+  const dateStr = new Date(scan.date).toLocaleDateString(undefined, {year:'numeric', month:'long', day:'numeric'});
+  document.getElementById('pdf-export-area').innerHTML =
+    buildPdfContent(scan.identification, scan.recommendations, scan.products, scan.overrideName, scan.previewUrl, dateStr);
+  window.print();
 }
 
 // ════════════════════════════════════════════════════
@@ -1592,6 +1701,7 @@ function renderHistory() {
 function openDetailModal(id) {
   const scan = state.history.find(function(s){ return s.id === id; });
   if(!scan) return;
+  state.currentDetailScanId = id;
   const name = scan.overrideName || scan.identification.commonName;
   document.getElementById('detail-modal-title').textContent = name;
   const date = new Date(scan.date).toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
@@ -1625,6 +1735,7 @@ function openDetailModal(id) {
 function closeDetailModal(e) {
   if(!e || e.target === document.getElementById('detail-modal')) {
     document.getElementById('detail-modal').classList.remove('open');
+    state.currentDetailScanId = null;
   }
 }
 
