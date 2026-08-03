@@ -124,6 +124,8 @@ input{font-family:inherit}
 .capture-inner{width:56px;height:56px;border-radius:28px;background:#fff}
 .analyze-btn{background:var(--green);border-radius:24px;padding:10px 16px;display:flex;align-items:center;gap:6px;color:#fff;font-size:13px;font-weight:700;min-width:100px;justify-content:center}
 .analyze-btn:disabled{background:rgba(255,255,255,.12);color:rgba(255,255,255,.4)}
+.id-backup-fab{position:absolute;right:16px;bottom:16px;width:44px;height:44px;border-radius:22px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;font-size:20px;color:#fff;z-index:5}
+.id-backup-fab:active{background:rgba(255,255,255,.28)}
 
 /* ── RESULTS ── */
 .plant-name{font-size:22px;font-weight:800}
@@ -292,6 +294,7 @@ input{font-family:inherit}
     <button class="topbar-install-btn" id="install-btn-camera" onclick="handleInstallClick()">Install</button>
   </div>
   <div class="cam-area" id="cam-area">
+    <button class="id-backup-fab" onclick="backupNow()" title="Back up scan history">💾</button>
     <div class="cam-empty" id="cam-empty">
       <div class="cam-empty-text">Upload or take a photo of a plant to identify it and get care tips</div>
     </div>
@@ -382,8 +385,16 @@ input{font-family:inherit}
             </div>
             <span style="color:var(--muted)">›</span>
           </div>
+          <div class="settings-row" onclick="openPostalPicker()" style="cursor:pointer">
+            <div class="settings-row-icon">🛒</div>
+            <div class="settings-row-content">
+              <div class="settings-row-title">Local Shopping</div>
+              <div class="settings-row-value" id="settings-postal-val">Not set — tap to configure</div>
+            </div>
+            <span style="color:var(--muted)">›</span>
+          </div>
         </div>
-        <div class="settings-note">Locked to this region until changed. Used for climate-specific care tips.</div>
+        <div class="settings-note">Region is locked until changed and used for climate-specific care tips. Area/postal code narrows local nursery results by distance.</div>
       </div>
       <!-- Data -->
       <div class="settings-section">
@@ -457,7 +468,7 @@ input{font-family:inherit}
       <button class="modal-close" onclick="closeRegionModal()">✕</button>
     </div>
     <div id="region-country-label" style="font-size:13px;color:var(--muted);display:none;margin-bottom:4px"></div>
-    <div class="search-row">
+    <div class="search-row" id="region-search-row">
       <span style="font-size:16px">🔍</span>
       <input class="search-input" id="region-search" placeholder="Search…" oninput="filterRegionList()">
     </div>
@@ -620,6 +631,7 @@ window.addEventListener('load', function() {
   state.history = JSON.parse(localStorage.getItem('pc_history') || '[]');
 
   updateSettingsDisplay();
+  checkForBackupOnLoad();
 
   // First screen is a history baseline (replaceState), not a pushed entry —
   // so back from here exits the app instead of landing on a stale/incomplete
@@ -703,6 +715,10 @@ function updateSettingsDisplay() {
   const rv = document.getElementById('settings-region-val');
   if(state.region) rv.textContent = state.region.state + ', ' + state.region.country;
   else rv.textContent = 'Not set — tap to configure';
+  const pv = document.getElementById('settings-postal-val');
+  if(state.region && state.region.postalCode) pv.textContent = state.region.postalCode + (state.region.lat ? '' : ' (locating…)');
+  else if(state.region) pv.textContent = 'Skipped — tap to add';
+  else pv.textContent = 'Not set — tap to configure';
   document.getElementById('settings-version-val').textContent = APP_VERSION;
   updateInstallDisplay();
 }
@@ -752,6 +768,22 @@ function closeRegionModal(e) {
 function filterRegionList() { renderRegionList(); }
 
 function renderRegionList() {
+  const searchRow = document.getElementById('region-search-row');
+  if(state.regionStep === 'postal') {
+    searchRow.style.display = 'none';
+    document.getElementById('region-custom-section').style.display = 'none';
+    const list = document.getElementById('region-list');
+    const existing = (pendingRegionBase && pendingRegionBase.postalCode) || (state.region && state.region.postalCode) || '';
+    list.innerHTML = `
+      <div class="modal-list-item" onclick="skipPostalCode()">Skip local results</div>
+      <div style="padding:14px 4px 4px;font-size:13px;color:var(--muted)">Area/postal code narrows local nursery &amp; garden center results by distance, closest first.</div>
+      <div class="custom-name-row" style="padding:10px 4px">
+        <input class="custom-name-input" id="postal-code-input" placeholder="e.g. 23185" value="${escHtml(existing)}">
+        <button class="btn btn-primary" style="padding:10px 18px;border-radius:12px" onclick="confirmPostalCode()">Save</button>
+      </div>`;
+    return;
+  }
+  searchRow.style.display = '';
   const q = document.getElementById('region-search').value.toLowerCase();
   const list = document.getElementById('region-list');
   if(state.regionStep === 'country') {
@@ -793,6 +825,14 @@ function selectCountry(code) {
 }
 
 function regionPickerBack() {
+  if(state.regionStep === 'postal') {
+    state.regionStep = 'state';
+    document.getElementById('region-modal-title').textContent = state.selectedCountry.code === 'US' ? 'Select State' : 'Select Region';
+    document.getElementById('region-country-label').style.display = 'block';
+    document.getElementById('region-search').value = '';
+    renderRegionList();
+    return;
+  }
   state.regionStep = 'country';
   state.selectedCountry = null;
   document.getElementById('region-modal-title').textContent = 'Select Country';
@@ -804,14 +844,75 @@ function regionPickerBack() {
 }
 
 function selectRegionState(stateName) {
-  applyRegion({ country: state.selectedCountry.name, state: stateName, countryCode: state.selectedCountry.code });
+  goToPostalStep({ country: state.selectedCountry.name, state: stateName, countryCode: state.selectedCountry.code });
 }
 
 function confirmCustomRegion() {
   const val = document.getElementById('region-custom-input').value.trim();
   if(!val || !state.selectedCountry) return;
-  applyRegion({ country: state.selectedCountry.name, state: val, countryCode: state.selectedCountry.code });
+  goToPostalStep({ country: state.selectedCountry.name, state: val, countryCode: state.selectedCountry.code });
   document.getElementById('region-custom-input').value = '';
+}
+
+// ── Local Shopping (area/postal code) step — always the last step of the
+// region picker flow, so climate/care region (country+state) and local
+// shopping narrowing (postal code) are set together but stay independently
+// skippable. Reuses applyRegion() for the actual commit so onboarding vs
+// settings context handling doesn't need to be duplicated here.
+let pendingRegionBase = null;
+
+function goToPostalStep(base) {
+  pendingRegionBase = base;
+  state.regionStep = 'postal';
+  document.getElementById('region-modal-title').textContent = 'Local Shopping';
+  document.getElementById('region-back-btn').style.display = 'inline';
+  document.getElementById('region-country-label').style.display = 'none';
+  renderRegionList();
+}
+
+function openPostalPicker() {
+  if(!state.region) { openRegionPicker('settings'); return; }
+  state.regionPickerContext = 'settings';
+  pendingRegionBase = { country: state.region.country, state: state.region.state, countryCode: state.region.countryCode };
+  state.regionStep = 'postal';
+  document.getElementById('region-modal-title').textContent = 'Local Shopping';
+  document.getElementById('region-back-btn').style.display = 'none';
+  document.getElementById('region-country-label').style.display = 'none';
+  renderRegionList();
+  document.getElementById('region-modal').classList.add('open');
+}
+
+function skipPostalCode() {
+  applyRegion(Object.assign({}, pendingRegionBase, { postalCode: null, lat: null, lon: null }));
+}
+
+function confirmPostalCode() {
+  const val = document.getElementById('postal-code-input').value.trim();
+  if(!val) { skipPostalCode(); return; }
+  const region = Object.assign({}, pendingRegionBase, { postalCode: val, lat: null, lon: null });
+  applyRegion(region);
+  geocodePostalCode(region);
+}
+
+// Fire-and-forget: mutates `region` in place once resolved, so whichever
+// variable holds this same object reference (pendingOnboardingRegion or
+// state.region — applyRegion() assigns the reference, not a copy) picks up
+// lat/lon without another round of onboarding/settings branching here.
+async function geocodePostalCode(region) {
+  try {
+    const cc = (region.countryCode || 'US').toLowerCase();
+    const resp = await fetch(`https://api.zippopotam.us/${cc}/${encodeURIComponent(region.postalCode)}`);
+    if(!resp.ok) return;
+    const data = await resp.json();
+    const place = data.places && data.places[0];
+    if(!place) return;
+    region.lat = parseFloat(place.latitude);
+    region.lon = parseFloat(place.longitude);
+    if(state.region === region) {
+      localStorage.setItem('pc_region', JSON.stringify(state.region));
+      updateSettingsDisplay();
+    }
+  } catch(e) { console.warn('Postal code geocoding failed:', e.message); }
 }
 
 function applyRegion(region) {
@@ -1067,7 +1168,8 @@ async function startAnalysis(overrideName, overrideSci) {
 
     // Step 2: Care recs (built-in, region-aware)
     const recs = generateRecommendations(idResult.identification, state.region);
-    const products = generateProducts(idResult.identification, state.region);
+    setLoadingText('Finding nearby nurseries…');
+    const products = await generateProducts(idResult.identification, state.region);
 
     state.result = { ...idResult, recommendations: recs, products, overrideName: overrideName || null };
 
@@ -1134,7 +1236,7 @@ async function applyOverride(name, sci) {
     setLoadingText('Generating care tips…');
 
     const recs = generateRecommendations(identification, state.region);
-    const products = generateProducts(identification, state.region);
+    const products = await generateProducts(identification, state.region);
     state.result = Object.assign({}, existing, { identification: identification, recommendations: recs, products: products, overrideName: name });
     state.scanSaved = false;
 
@@ -1389,8 +1491,41 @@ function zoneSeasonalNote(z, plant, loc) {
 // ════════════════════════════════════════════════════
 //  PRODUCT LINKS
 // ════════════════════════════════════════════════════
-function generateProducts(identification, region) {
-  const plant = encodeURIComponent(identification.commonName);
+function haversineMiles(lat1, lon1, lat2, lon2) {
+  const R = 3958.8;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// OpenStreetMap/Overpass — free, keyless, CORS-open, matches the app's
+// no-paid-API-dependency approach for optional features (PLANTNET_API_KEY
+// is the only required paid key, held server-side in the Worker).
+async function findNearbyNurseries(lat, lon) {
+  const query = `[out:json][timeout:10];(node["shop"="garden_centre"](around:40000,${lat},${lon});node["shop"="florist"](around:40000,${lat},${lon}););out body 15;`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const resp = await fetch('https://overpass-api.de/api/interpreter?data=' + encodeURIComponent(query), {signal: ctrl.signal});
+    if(!resp.ok) throw new Error('Overpass request failed');
+    const data = await resp.json();
+    return (data.elements || [])
+      .filter(el => el.tags && el.tags.name)
+      .map(el => ({
+        name: el.tags.name,
+        lat: el.lat, lon: el.lon,
+        distance: haversineMiles(lat, lon, el.lat, el.lon),
+        address: [el.tags['addr:housenumber'], el.tags['addr:street']].filter(Boolean).join(' ') || null
+      }))
+      .sort((a, b) => a.distance - b.distance)
+      .slice(0, 8);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function generateProducts(identification, region) {
   const cc = region?.countryCode || 'US';
   const loc = region ? encodeURIComponent(region.state + ' ' + region.country) : '';
 
@@ -1400,13 +1535,35 @@ function generateProducts(identification, region) {
     return `https://www.google.com/search?q=${encodeURIComponent(q)}&tbm=shop&gl=${gl}`;
   }
 
-  const products = [
-    {
+  const products = [];
+
+  // Closest-first local results, only when a geocoded postal/area code is
+  // set (see openPostalPicker/geocodePostalCode) — otherwise fall back to
+  // the generic state-level Maps search below.
+  if(region?.lat && region?.lon) {
+    try {
+      const nearby = await findNearbyNurseries(region.lat, region.lon);
+      nearby.forEach(function(n) {
+        products.push({
+          icon:'🏪', type:'local_nursery',
+          name: n.name,
+          desc: `${n.distance.toFixed(1)} mi away${n.address ? ' · ' + n.address : ''}`,
+          url: `https://www.google.com/maps/search/?api=1&query=${n.lat},${n.lon}`
+        });
+      });
+    } catch(e) { console.warn('Nearby nursery lookup failed:', e.message); }
+  }
+
+  if(products.length === 0) {
+    products.push({
       icon:'🏪', type:'local_nursery',
       name:'Find Local Nurseries',
       desc:`Garden centers in ${region?.state || 'your area'} that stock ${identification.commonName}`,
       url:`https://www.google.com/maps/search/plant+nursery+garden+center+near+${loc}`
-    },
+    });
+  }
+
+  products.push(
     {
       icon:'🌱', type:'fertilizer',
       name:`${identification.commonName} Fertilizer`,
@@ -1418,22 +1575,20 @@ function generateProducts(identification, region) {
       name:'Potting Soil Mix',
       desc:`Best potting mix for ${identification.commonName}`,
       url: shopUrl(identification.commonName + ' potting mix soil')
+    },
+    {
+      icon:'💧', type:'tool',
+      name:'Soil Moisture Meter',
+      desc:'Avoid over/under-watering with a moisture meter',
+      url: shopUrl('soil moisture meter plant')
+    },
+    {
+      icon:'🛒', type:'general',
+      name:`${identification.commonName} Care Kit`,
+      desc:'Complete care kits and accessories',
+      url: shopUrl(identification.commonName + ' plant care kit')
     }
-  ];
-
-  products.push({
-    icon:'💧', type:'tool',
-    name:'Soil Moisture Meter',
-    desc:'Avoid over/under-watering with a moisture meter',
-    url: shopUrl('soil moisture meter plant')
-  });
-
-  products.push({
-    icon:'🛒', type:'general',
-    name:`${identification.commonName} Care Kit`,
-    desc:'Complete care kits and accessories',
-    url: shopUrl(identification.commonName + ' plant care kit')
-  });
+  );
 
   return products;
 }
@@ -2214,6 +2369,15 @@ function importLatestBackupFromFiles(files) {
   if(!latest) { if(files && files.length) alert('No .json or .js backup file found in what you selected.'); return; }
   importDataFromFile(latest);
 }
+function applyBackupData(parsed) {
+  state.history = parsed.history;
+  state.region = (parsed.region && typeof parsed.region === 'object') ? parsed.region : null;
+  localStorage.setItem('pc_history', JSON.stringify(state.history));
+  localStorage.setItem('pc_region', JSON.stringify(state.region));
+  renderHistory();
+  updateSettingsDisplay();
+}
+
 async function importDataFromFile(file) {
   if(!file) return;
   try {
@@ -2221,16 +2385,38 @@ async function importDataFromFile(file) {
     const parsed = JSON.parse(text);
     if(!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.history)) throw new Error('This file does not look like a Laughing Gnome backup.');
     if(!confirm('This will replace all current scans and region on this device with the contents of the imported file. Continue?')) return;
-    state.history = parsed.history;
-    state.region = (parsed.region && typeof parsed.region === 'object') ? parsed.region : null;
-    localStorage.setItem('pc_history', JSON.stringify(state.history));
-    localStorage.setItem('pc_region', JSON.stringify(state.region));
-    renderHistory();
-    updateSettingsDisplay();
+    applyBackupData(parsed);
     alert('Data imported.');
   } catch(e) {
     alert('Could not import that file: ' + e.message);
   }
+}
+
+// Runs once at startup — only when local history is empty (e.g. cleared via
+// Erase All Data, or a fresh browser profile) and only on browsers where the
+// File System Access API let a backup handle persist (see
+// getWritableBackupHandle/saveBackupHandle). Never force-requests permission
+// here: a silent load-time prompt has no user gesture behind it, so this
+// only fires when the browser already remembers a granted 'read' permission
+// from a prior Back Up Now / Restore.
+async function checkForBackupOnLoad() {
+  if(state.history.length > 0) return;
+  if(!window.showSaveFilePicker) return;
+  try {
+    const handle = await loadSavedBackupHandle();
+    if(!handle) return;
+    const perm = await handle.queryPermission({mode:'read'});
+    if(perm !== 'granted') return;
+    const file = await handle.getFile();
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if(!parsed || !Array.isArray(parsed.history) || parsed.history.length === 0) return;
+    const when = parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString() : 'an earlier session';
+    const count = parsed.history.length;
+    if(confirm(`Load latest backup? Found ${count} saved scan${count === 1 ? '' : 's'} from ${when}.`)) {
+      applyBackupData(parsed);
+    }
+  } catch(e) { /* no readable backup on this device — nothing to offer */ }
 }
 
 </script>
