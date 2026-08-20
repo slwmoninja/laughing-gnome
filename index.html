@@ -2465,29 +2465,57 @@ document.addEventListener('visibilitychange', function() {
 });
 window.addEventListener('pagehide', function() { writeExitBackup(); });
 
-// Shown only from Path A0 below — reuses the same modal-overlay/button
-// markup as the install prompt (openInfoModal) rather than a native
-// confirm(), per this app's own Step 4b-style Yes/No popup convention.
-function offerExitBackupRestore(parsed) {
+// Shared Yes/No popup for Path A0 and Path A below -- both already have
+// `parsed` backup data in hand (read silently, no user gesture involved) and
+// just need confirmation before overwriting local state. Reuses the same
+// modal-overlay/button markup as the install prompt (openInfoModal) rather
+// than a native confirm(), per this app's own Step 4b-style Yes/No popup
+// convention. `source` is a short phrase describing where the data came
+// from, dropped into the body copy so the two paths read distinctly.
+function offerAutoRestore(parsed, source) {
   const when = parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString() : 'an earlier session';
   const count = parsed.history.length;
   openInfoModal('Restore Backup?', `
-    <div style="margin-bottom:14px">Found ${count} saved scan${count === 1 ? '' : 's'} from ${when} in this app's own automatic safety-net backup. Load it?</div>
-    <button class="btn btn-primary" id="exit-backup-yes" style="width:100%;margin-bottom:8px">Yes, restore</button>
-    <button class="btn btn-secondary" id="exit-backup-no" style="width:100%">No</button>
+    <div style="margin-bottom:14px">Found ${count} saved scan${count === 1 ? '' : 's'} from ${when} in ${source}. Load it?</div>
+    <button class="btn btn-primary" id="auto-restore-yes" style="width:100%;margin-bottom:8px">Yes, restore</button>
+    <button class="btn btn-secondary" id="auto-restore-no" style="width:100%">No</button>
   `);
-  document.getElementById('exit-backup-yes').addEventListener('click', function(){
+  document.getElementById('auto-restore-yes').addEventListener('click', function(){
     document.getElementById('info-overlay').parentElement.remove();
     applyBackupData(parsed);
   });
-  document.getElementById('exit-backup-no').addEventListener('click', function(){
+  document.getElementById('auto-restore-no').addEventListener('click', function(){
+    document.getElementById('info-overlay').parentElement.remove();
+  });
+}
+
+// Path B: shown when neither A0 nor A found anything to silently offer --
+// the realistic case on most phones, where there's no File System Access
+// API to have ever granted a handle (iOS Safari, most Android Chrome) and
+// no Exit App Backup snapshot yet either (e.g. this is the very first
+// session on this device). Nothing can be silently read here without a user
+// gesture, so the prompt itself IS the ask: tapping "Restore" goes straight
+// into this app's existing manual restore/open-file-picker flow
+// (triggerRestoreBackup) rather than trying to read anything up front.
+function offerManualRestorePrompt() {
+  openInfoModal('Restore Backup?', `
+    <div style="margin-bottom:14px">This device's saved scan history looks empty. If you have a Laughing Gnome backup file saved, you can restore it now.</div>
+    <button class="btn btn-primary" id="manual-restore-yes" style="width:100%;margin-bottom:8px">Restore from file&hellip;</button>
+    <button class="btn btn-secondary" id="manual-restore-no" style="width:100%">No, start fresh</button>
+  `);
+  document.getElementById('manual-restore-yes').addEventListener('click', function(){
+    document.getElementById('info-overlay').parentElement.remove();
+    triggerRestoreBackup();
+  });
+  document.getElementById('manual-restore-no').addEventListener('click', function(){
     document.getElementById('info-overlay').parentElement.remove();
   });
 }
 
 // Runs once at startup — only when local history is empty (e.g. cleared via
 // Erase All Data, a fresh browser profile, or the browser silently evicting
-// storage under disk pressure).
+// storage under disk pressure). Falls through Path A0 -> Path A -> Path B,
+// stopping at the first one that has something to offer.
 //
 // Path A0 (checked first): the silent, automatic Exit App Backup above —
 // works on every browser (no File System Access API needed), which is the
@@ -2500,31 +2528,37 @@ function offerExitBackupRestore(parsed) {
 // here: a silent load-time prompt has no user gesture behind it, so this
 // only fires when the browser already remembers a granted 'read' permission
 // from a prior Back Up Now / Restore.
+//
+// Path B (final fallback): every other case -- most phones, where neither
+// path above found anything. See offerManualRestorePrompt above.
 async function checkForBackupOnLoad() {
   if(state.history.length > 0) return;
 
   const exitBackup = await readExitBackup();
   if(exitBackup && Array.isArray(exitBackup.history) && exitBackup.history.length > 0) {
-    offerExitBackupRestore(exitBackup);
+    offerAutoRestore(exitBackup, "this app's own automatic safety-net backup");
     return;
   }
 
-  if(!window.showSaveFilePicker) return;
-  try {
-    const handle = await loadSavedBackupHandle();
-    if(!handle) return;
-    const perm = await handle.queryPermission({mode:'read'});
-    if(perm !== 'granted') return;
-    const file = await handle.getFile();
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    if(!parsed || !Array.isArray(parsed.history) || parsed.history.length === 0) return;
-    const when = parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString() : 'an earlier session';
-    const count = parsed.history.length;
-    if(confirm(`Load latest backup? Found ${count} saved scan${count === 1 ? '' : 's'} from ${when}.`)) {
-      applyBackupData(parsed);
-    }
-  } catch(e) { /* no readable backup on this device — nothing to offer */ }
+  if(window.showSaveFilePicker) {
+    try {
+      const handle = await loadSavedBackupHandle();
+      if(handle) {
+        const perm = await handle.queryPermission({mode:'read'});
+        if(perm === 'granted') {
+          const file = await handle.getFile();
+          const text = await file.text();
+          const parsed = JSON.parse(text);
+          if(parsed && Array.isArray(parsed.history) && parsed.history.length > 0) {
+            offerAutoRestore(parsed, 'your saved backup file');
+            return;
+          }
+        }
+      }
+    } catch(e) { /* no readable backup on this device via this path — fall through to Path B */ }
+  }
+
+  offerManualRestorePrompt();
 }
 
 </script>
