@@ -2393,15 +2393,122 @@ async function importDataFromFile(file) {
   }
 }
 
+// ════════════════════════════════════════════════════
+//  EXIT APP BACKUP — silent, automatic, app-owned safety net
+// ════════════════════════════════════════════════════
+// Distinct from Back Up Now above in every way that matters: this is NOT
+// user-facing (no button, no toast, no alert — total silence, success or
+// failure) and it is NOT a user Downloads-folder file. It overwrites a
+// single fixed record in its own IndexedDB store every time the app
+// backgrounds, purely as a last-resort candidate for the auto-restore check
+// below (Path A0) on some LATER load where local history has gone empty —
+// it exists precisely because a user can't be relied on to have ever tapped
+// Back Up Now or granted File System Access permission themselves. Manual
+// backup stays the user's real, portable, inspectable copy; this is just a
+// second, invisible net underneath it.
+const EXIT_BACKUP_DB = 'laughing-gnome-exit-backup', EXIT_BACKUP_STORE = 'backup', EXIT_BACKUP_KEY = 'latest';
+function openExitBackupDb() {
+  return new Promise(function(resolve, reject) {
+    const req = indexedDB.open(EXIT_BACKUP_DB, 1);
+    req.onupgradeneeded = function(){ req.result.createObjectStore(EXIT_BACKUP_STORE); };
+    req.onsuccess = function(){ resolve(req.result); };
+    req.onerror = function(){ reject(req.error); };
+  });
+}
+async function readExitBackup() {
+  try {
+    const db = await openExitBackupDb();
+    return await new Promise(function(resolve, reject) {
+      const req = db.transaction(EXIT_BACKUP_STORE, 'readonly').objectStore(EXIT_BACKUP_STORE).get(EXIT_BACKUP_KEY);
+      req.onsuccess = function(){ resolve(req.result || null); };
+      req.onerror = function(){ reject(req.error); };
+    });
+  } catch(e) { return null; }
+}
+// Same fingerprint technique as any content-dedup in this app (stringify the
+// persisted-state shape, compare against the last-written value before
+// touching storage) kept under its own key so it can never collide with a
+// future dedup key on the manual Back Up Now path above. Neither
+// state.region nor state.history carries a self-ticking bookkeeping field
+// (no lastSyncAt/poll-timestamp/etc. in this app), so nothing needs
+// excluding here — the whole persisted shape is fair game.
+const EXIT_BACKUP_FP_KEY = 'pc_exit_backup_fp';
+function exitBackupFingerprint() {
+  return JSON.stringify({ region: state.region, history: state.history });
+}
+async function writeExitBackup() {
+  if(state.history.length === 0) return; // nothing worth protecting yet
+  const fp = exitBackupFingerprint();
+  let lastFp = null;
+  try { lastFp = localStorage.getItem(EXIT_BACKUP_FP_KEY); } catch(e) {}
+  if(fp === lastFp) return; // unchanged since the last time the app backgrounded — skip the write
+  try {
+    const db = await openExitBackupDb();
+    await new Promise(function(resolve, reject) {
+      const tx = db.transaction(EXIT_BACKUP_STORE, 'readwrite');
+      tx.objectStore(EXIT_BACKUP_STORE).put({ region: state.region, history: state.history, exportedAt: new Date().toISOString() }, EXIT_BACKUP_KEY);
+      tx.oncomplete = resolve; tx.onerror = function(){ reject(tx.error); };
+    });
+    try { localStorage.setItem(EXIT_BACKUP_FP_KEY, fp); } catch(e) {}
+  } catch(e) { /* best-effort safety net — nothing to surface, silent by design either way */ }
+}
+// Primary trigger: 'hidden' fires on every real way this app stops being the
+// visible tab/app (Home button, app switcher, tab switch, screen lock) on
+// both mobile and desktop, which is as close to "user is leaving" as the web
+// platform reliably offers. pagehide is a redundant second trigger for the
+// rare teardown paths that don't reliably fire visibilitychange alone.
+// Deliberately no beforeunload — it's unreliable on mobile (where this
+// backup matters most) and this must never risk blocking or delaying the
+// app from actually closing.
+document.addEventListener('visibilitychange', function() {
+  if(document.visibilityState === 'hidden') writeExitBackup();
+});
+window.addEventListener('pagehide', function() { writeExitBackup(); });
+
+// Shown only from Path A0 below — reuses the same modal-overlay/button
+// markup as the install prompt (openInfoModal) rather than a native
+// confirm(), per this app's own Step 4b-style Yes/No popup convention.
+function offerExitBackupRestore(parsed) {
+  const when = parsed.exportedAt ? new Date(parsed.exportedAt).toLocaleString() : 'an earlier session';
+  const count = parsed.history.length;
+  openInfoModal('Restore Backup?', `
+    <div style="margin-bottom:14px">Found ${count} saved scan${count === 1 ? '' : 's'} from ${when} in this app's own automatic safety-net backup. Load it?</div>
+    <button class="btn btn-primary" id="exit-backup-yes" style="width:100%;margin-bottom:8px">Yes, restore</button>
+    <button class="btn btn-secondary" id="exit-backup-no" style="width:100%">No</button>
+  `);
+  document.getElementById('exit-backup-yes').addEventListener('click', function(){
+    document.getElementById('info-overlay').parentElement.remove();
+    applyBackupData(parsed);
+  });
+  document.getElementById('exit-backup-no').addEventListener('click', function(){
+    document.getElementById('info-overlay').parentElement.remove();
+  });
+}
+
 // Runs once at startup — only when local history is empty (e.g. cleared via
-// Erase All Data, or a fresh browser profile) and only on browsers where the
-// File System Access API let a backup handle persist (see
+// Erase All Data, a fresh browser profile, or the browser silently evicting
+// storage under disk pressure).
+//
+// Path A0 (checked first): the silent, automatic Exit App Backup above —
+// works on every browser (no File System Access API needed), which is the
+// whole reason it exists as an independent net rather than relying solely
+// on Path A below.
+//
+// Path A (fallback): silent handle re-read, only on browsers where the File
+// System Access API let a backup handle persist (see
 // getWritableBackupHandle/saveBackupHandle). Never force-requests permission
 // here: a silent load-time prompt has no user gesture behind it, so this
 // only fires when the browser already remembers a granted 'read' permission
 // from a prior Back Up Now / Restore.
 async function checkForBackupOnLoad() {
   if(state.history.length > 0) return;
+
+  const exitBackup = await readExitBackup();
+  if(exitBackup && Array.isArray(exitBackup.history) && exitBackup.history.length > 0) {
+    offerExitBackupRestore(exitBackup);
+    return;
+  }
+
   if(!window.showSaveFilePicker) return;
   try {
     const handle = await loadSavedBackupHandle();
