@@ -734,8 +734,7 @@ let onboardingLocationDecided = false;
 function completeOnboarding() {
   if(!onboardingLocationDecided) return;
   state.region = pendingOnboardingRegion;
-  if(state.region) localStorage.setItem('pc_region', JSON.stringify(state.region));
-  else localStorage.removeItem('pc_region');
+  persistRegion();
   localStorage.setItem('pc_onboarding_done', '1');
   showScreen('camera');
   // New baseline, not a pushed entry — onboarding is a one-time setup flow,
@@ -910,7 +909,7 @@ async function geocodePostalCode(region) {
     region.lat = parseFloat(place.latitude);
     region.lon = parseFloat(place.longitude);
     if(state.region === region) {
-      localStorage.setItem('pc_region', JSON.stringify(state.region));
+      persistRegion();
       updateSettingsDisplay();
     }
   } catch(e) { console.warn('Postal code geocoding failed:', e.message); }
@@ -928,7 +927,7 @@ function applyRegion(region) {
     document.getElementById('ob-start-btn').disabled = false;
   } else {
     state.region = region;
-    localStorage.setItem('pc_region', JSON.stringify(state.region));
+    persistRegion();
     updateSettingsDisplay();
   }
 }
@@ -945,7 +944,7 @@ function skipRegion() {
     document.getElementById('ob-start-btn').disabled = false;
   } else {
     state.region = null;
-    localStorage.removeItem('pc_region');
+    persistRegion();
     updateSettingsDisplay();
   }
 }
@@ -1817,7 +1816,7 @@ function autoSaveScan() {
   };
   state.history.unshift(scan);
   if(state.history.length > 50) state.history = state.history.slice(0,50);
-  localStorage.setItem('pc_history', JSON.stringify(state.history));
+  persistHistory();
   state.scanSaved = true;
 }
 
@@ -1900,7 +1899,7 @@ function clearHistory() {
   if(state.history.length === 0) return;
   if(!confirm(`Delete all ${state.history.length} saved plant scans? This cannot be undone.`)) return;
   state.history = [];
-  localStorage.setItem('pc_history', JSON.stringify([]));
+  persistHistory();
   renderHistory();
   updateSettingsDisplay();
 }
@@ -1911,7 +1910,7 @@ function deleteHistoryEntry(id) {
   const name = scan.overrideName || scan.identification.commonName;
   if(!confirm('Remove "' + name + '" from history?')) return;
   state.history = state.history.filter(function(s){ return s.id !== id; });
-  localStorage.setItem('pc_history', JSON.stringify(state.history));
+  persistHistory();
   renderHistory();
   updateSettingsDisplay();
 }
@@ -2207,10 +2206,10 @@ maybeShowInstallPrompt();
 // (which is now purely informational, see handleInstallClick).
 function eraseAllData() {
   if(!confirm('Erase all Laughing Gnome data (saved scans and region) on this device? This cannot be undone.')) return;
-  localStorage.removeItem('pc_history');
-  localStorage.removeItem('pc_region');
   state.history = [];
   state.region = null;
+  persistHistory();
+  persistRegion();
   updateSettingsDisplay();
   renderHistory();
   alert('All data erased.');
@@ -2373,8 +2372,8 @@ function importLatestBackupFromFiles(files) {
 function applyBackupData(parsed) {
   state.history = parsed.history;
   state.region = (parsed.region && typeof parsed.region === 'object') ? parsed.region : null;
-  localStorage.setItem('pc_history', JSON.stringify(state.history));
-  localStorage.setItem('pc_region', JSON.stringify(state.region));
+  persistHistory();
+  persistRegion();
   renderHistory();
   updateSettingsDisplay();
 }
@@ -2399,13 +2398,36 @@ async function importDataFromFile(file) {
 // Distinct from Back Up Now above in every way that matters: this is NOT
 // user-facing (no button, no toast, no alert — total silence, success or
 // failure) and it is NOT a user Downloads-folder file. It overwrites a
-// single fixed record in its own IndexedDB store every time the app
-// backgrounds, purely as a last-resort candidate for the auto-restore check
-// below (Path A0) on some LATER load where local history has gone empty —
-// it exists precisely because a user can't be relied on to have ever tapped
-// Back Up Now or granted File System Access permission themselves. Manual
-// backup stays the user's real, portable, inspectable copy; this is just a
-// second, invisible net underneath it.
+// single fixed record in its own IndexedDB store, purely as a last-resort
+// candidate for the auto-restore check below (Path A0) on some LATER load
+// where local history has gone empty — it exists precisely because a user
+// can't be relied on to have ever tapped Back Up Now or granted File System
+// Access permission themselves. Manual backup stays the user's real,
+// portable, inspectable copy; this is just a second, invisible net
+// underneath it.
+//
+// Originally this only wrote at backgrounding (visibilitychange->hidden,
+// pagehide, see further down). Real gap found and fixed 2026-08-24
+// (rHabbits, confirmed on Android — same bug here since this is the same
+// code): async IndexedDB work started inside those handlers is racing the
+// OS, not guaranteed to finish. Per Chrome's own Page Lifecycle API
+// guidance (developer.chrome.com/docs/web-platform/page-lifecycle-api),
+// once a backgrounded page moves from hidden to frozen, "freezable tasks in
+// the page's task queues are suspended" — an in-flight transaction's
+// default auto-commit-on-idle can simply never get to run, silently
+// dropping the write with no error to catch. Two changes:
+// 1. persistHistory()/persistRegion() below (called from every place that
+//    actually mutates state.history/state.region, replacing raw
+//    localStorage.setItem calls) now debounce a refresh via
+//    scheduleExitBackup() on every real change, not just at exit — by the
+//    time backgrounding actually happens, the snapshot is typically already
+//    near-current from an earlier checkpoint instead of depending on one
+//    risky just-in-time write racing the freeze.
+// 2. writeExitBackup() now calls tx.commit() (feature-detected — Safari/iOS
+//    doesn't support it, silently falls back to the prior behavior there)
+//    right after the put(), forcing an immediate commit attempt instead of
+//    waiting on the browser's own idle-detection heuristic, which is
+//    exactly the mechanism the freeze race can cut off.
 const EXIT_BACKUP_DB = 'laughing-gnome-exit-backup', EXIT_BACKUP_STORE = 'backup', EXIT_BACKUP_KEY = 'latest';
 function openExitBackupDb() {
   return new Promise(function(resolve, reject) {
@@ -2447,10 +2469,37 @@ async function writeExitBackup() {
     await new Promise(function(resolve, reject) {
       const tx = db.transaction(EXIT_BACKUP_STORE, 'readwrite');
       tx.objectStore(EXIT_BACKUP_STORE).put({ region: state.region, history: state.history, exportedAt: new Date().toISOString() }, EXIT_BACKUP_KEY);
+      // Force an immediate commit attempt rather than waiting for the
+      // browser's default auto-commit-on-idle — see this section's header
+      // comment. Feature-detected: Safari/iOS has no IDBTransaction.commit(),
+      // so this is a no-op there and the transaction still auto-commits the
+      // old way, same as before this fix on that platform specifically.
+      if(typeof tx.commit === 'function') tx.commit();
       tx.oncomplete = resolve; tx.onerror = function(){ reject(tx.error); };
     });
     try { localStorage.setItem(EXIT_BACKUP_FP_KEY, fp); } catch(e) {}
   } catch(e) { /* best-effort safety net — nothing to surface, silent by design either way */ }
+}
+// Debounced trigger called from persistHistory()/persistRegion() below
+// (every real state mutation) — collapses rapid-fire changes into one write
+// shortly after things settle, rather than hammering IndexedDB repeatedly.
+let exitBackupDebounceId = null;
+function scheduleExitBackup() {
+  if(exitBackupDebounceId) clearTimeout(exitBackupDebounceId);
+  exitBackupDebounceId = setTimeout(function(){ exitBackupDebounceId = null; writeExitBackup(); }, 500);
+}
+// Replaces every raw `localStorage.setItem('pc_history'/'pc_region', ...)`
+// call scattered around this file — a single choke point per key means
+// "does every mutation refresh the exit-backup snapshot?" is one invariant
+// to check, not one per call site.
+function persistHistory() {
+  localStorage.setItem('pc_history', JSON.stringify(state.history));
+  scheduleExitBackup();
+}
+function persistRegion() {
+  if(state.region) localStorage.setItem('pc_region', JSON.stringify(state.region));
+  else localStorage.removeItem('pc_region');
+  scheduleExitBackup();
 }
 // Primary trigger: 'hidden' fires on every real way this app stops being the
 // visible tab/app (Home button, app switcher, tab switch, screen lock) on
@@ -2459,11 +2508,19 @@ async function writeExitBackup() {
 // rare teardown paths that don't reliably fire visibilitychange alone.
 // Deliberately no beforeunload — it's unreliable on mobile (where this
 // backup matters most) and this must never risk blocking or delaying the
-// app from actually closing.
+// app from actually closing. Both handlers write immediately, bypassing any
+// pending scheduleExitBackup() debounce — this is the "about to disappear"
+// moment and shouldn't be delayed further.
 document.addEventListener('visibilitychange', function() {
-  if(document.visibilityState === 'hidden') writeExitBackup();
+  if(document.visibilityState === 'hidden') {
+    if(exitBackupDebounceId) { clearTimeout(exitBackupDebounceId); exitBackupDebounceId = null; }
+    writeExitBackup();
+  }
 });
-window.addEventListener('pagehide', function() { writeExitBackup(); });
+window.addEventListener('pagehide', function() {
+  if(exitBackupDebounceId) { clearTimeout(exitBackupDebounceId); exitBackupDebounceId = null; }
+  writeExitBackup();
+});
 
 // Shared Yes/No popup for Path A0 and Path A below -- both already have
 // `parsed` backup data in hand (read silently, no user gesture involved) and
