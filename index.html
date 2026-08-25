@@ -433,6 +433,13 @@ input{font-family:inherit}
             <div class="settings-row-icon">ℹ️</div>
             <div class="settings-row-title">Laughing Gnome <span id="settings-version-val"></span></div>
           </div>
+          <div class="settings-row" id="settings-reset-install-row" onclick="resetInstallStatus()" style="cursor:pointer;display:none">
+            <div class="settings-row-icon">↺</div>
+            <div class="settings-row-content">
+              <div class="settings-row-title">Not on your Home Screen?</div>
+              <div class="settings-row-value">Reset install status</div>
+            </div>
+          </div>
         </div>
       </div>
       <div style="height:16px"></div>
@@ -2041,6 +2048,17 @@ let deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', function(e) {
   e.preventDefault();
   deferredInstallPrompt = e;
+  // Chrome only fires this event when it believes the app is NOT currently
+  // installed for this origin -- that's the one reliable signal that a
+  // previously-set installed flag has gone stale (e.g. the user really did
+  // uninstall from the Home Screen, which does not clear this origin's
+  // localStorage). Drop the stale flag here so the real Install flow takes
+  // back over instead of the pill staying stuck on "Installed" with no way
+  // back in except the Settings reset link below.
+  if(installPromptAccepted) {
+    installPromptAccepted = false;
+    try{ localStorage.removeItem('pc_install_accepted'); }catch(e){}
+  }
   updateInstallDisplay();
 });
 window.addEventListener('appinstalled', function() {
@@ -2133,6 +2151,20 @@ function updateInstallDisplay() {
     btn.textContent = installed ? 'Installed' : 'Install';
     btn.classList.toggle('installed', installed);
   });
+  // The persisted install flag survives a real Home Screen uninstall (site
+  // storage isn't cleared by an OS-level uninstall), so "installPromptAccepted
+  // true but not actually running standalone" is genuinely ambiguous from the
+  // page's point of view -- it could be a legit install just being viewed in
+  // a regular tab, or a stale flag left behind by an uninstall. Surface a
+  // one-tap way out of the stale case rather than leaving the user stuck
+  // looking at "Installed" with a tap that only offers uninstall steps.
+  const resetRow = document.getElementById('settings-reset-install-row');
+  if(resetRow) resetRow.style.display = (!isStandaloneApp() && installPromptAccepted) ? '' : 'none';
+}
+function resetInstallStatus() {
+  installPromptAccepted = false;
+  try{ localStorage.removeItem('pc_install_accepted'); }catch(e){}
+  updateInstallDisplay();
 }
 
 // Shared by the topbar Install button's tap and the proactive install-prompt
